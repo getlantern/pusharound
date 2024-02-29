@@ -14,6 +14,16 @@ import (
 	"time"
 )
 
+const (
+	// Every notification sent via the pusharound system will include a mapping with this key set to
+	// true. This will be set in the custom data. Almost every provider supports custom key-value
+	// pairs. APNS requires background (silent) notifications to essentially only contain custom
+	// key-value pairs
+	//
+	// See https://developer.apple.com/documentation/usernotifications/pushing-background-updates-to-your-app#Create-a-background-notification.
+	pusharoundKey = "pusharound"
+)
+
 // Target is the target for a push notification.
 type Target struct {
 	// Exactly one of the following will be non-empty.
@@ -57,6 +67,22 @@ func (m message) TTL() time.Duration      { return m.ttl }
 // NewMessage constructs a message with the given target, data, and TTL. A TTL of zero means the
 // value is unspecified. In this case, provider defaults will be used.
 func NewMessage(t Target, data map[string]string, ttl time.Duration) Message {
+	_data := map[string]string{}
+	for k, v := range data {
+		_data[k] = v
+	}
+	_data[pusharoundKey] = "true"
+	return message{t, _data, ttl}
+}
+
+// NewRegularMessage is like NewMessage, but does not include the special pusharound signal in the
+// message. Pusharound client libraries use the presence of this signal to distinguish pusharound
+// notifications from normal notifications sent using the same account. NewRegularMessage is
+// useful for centralizing on the pusharound back-end library, sending both special pusharound
+// messages (using NewMessage) and regular application notifications (using NewRegularMessage).
+// Using NewRegularMessage in this way is not required - the pusharound back-end library can be used
+// alongside traditional mechanisms for sending application notifications.
+func NewRegularMessage(t Target, data map[string]string, ttl time.Duration) Message {
 	return message{t, data, ttl}
 }
 
