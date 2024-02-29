@@ -44,13 +44,15 @@ func (pp pushyProvider) Send(ctx context.Context, messages []Message) error {
 		ByMessage: make([]error, len(messages)),
 	}
 
-	type message struct {
+	// TODO: break up messages with payload over 4 KB limit
+
+	type indexedMessage struct {
 		Message
 		index int
 	}
 
 	// Group messages by payload.
-	byPayloadHash := map[string][]message{}
+	byPayloadHash := map[string][]indexedMessage{}
 	for i, m := range messages {
 		if m.Data() == nil {
 			batchErr.ByMessage[i] = errors.New("no payload")
@@ -64,16 +66,20 @@ func (pp pushyProvider) Send(ctx context.Context, messages []Message) error {
 		hash := hashPayload(m.Data())
 		msgsWithHash, ok := byPayloadHash[hash]
 		if !ok {
-			msgsWithHash = []message{}
+			msgsWithHash = []indexedMessage{}
 		}
-		byPayloadHash[hash] = append(msgsWithHash, message{m, i})
+		byPayloadHash[hash] = append(msgsWithHash, indexedMessage{m, i})
+	}
+
+	batches := [][]indexedMessage{}
+	for _, msgs := range byPayloadHash {
+		b := splitBatches(msgs, pushyPushBatchLimit)
+		batches = append(batches, b...)
 	}
 
 	// Each value in the map now represents a batch of messages to send, all with the same payload.
 	// For each batch, we build a request to the Pushy API and attempt to send.
-	for _, msgs := range byPayloadHash {
-		// TODO: split up batches over 100k limit
-
+	for _, msgs := range batches {
 		req := pushyPushRequest{
 			To:   []string{},
 			Data: msgs[0].Data(),
@@ -240,4 +246,30 @@ func hashPayload(payload map[string]string) string {
 		fmt.Fprintln(h)
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// splitBatches splits the input messages into batches, each under the batch size limit.
+func splitBatches[T any](msgs []T, batchLimit int) [][]T {
+	if len(msgs) == 0 {
+		return [][]T{}
+	}
+	if len(msgs) <= batchLimit {
+		return [][]T{msgs}
+	}
+
+	batches := [][]T{}
+	currentBatch := make([]T, 0, batchLimit)
+
+	for i := 0; i < len(msgs); i++ {
+		if i != 0 && i%batchLimit == 0 {
+			batches = append(batches, currentBatch)
+			currentBatch = []T{}
+		}
+		currentBatch = append(currentBatch, msgs[i])
+	}
+
+	if len(currentBatch) > 0 {
+		batches = append(batches, currentBatch)
+	}
+	return batches
 }
