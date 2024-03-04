@@ -51,15 +51,20 @@ func (pp pushyProvider) Send(ctx context.Context, messages []Message) error {
 		index int
 	}
 
+	_messages := make([]indexedMessage, len(messages))
+	for i, m := range messages {
+		_messages[i] = indexedMessage{prepareMessage(m), i}
+	}
+
 	// Group messages by payload.
 	byPayloadHash := map[string][]indexedMessage{}
-	for i, m := range messages {
+	for _, m := range _messages {
 		if m.Data() == nil {
-			batchErr.ByMessage[i] = errors.New("no payload")
+			batchErr.ByMessage[m.index] = errors.New("no payload")
 			continue
 		}
 		if !m.Target().valid() {
-			batchErr.ByMessage[i] = errors.New("invalid target, must specify either topic or token")
+			batchErr.ByMessage[m.index] = errors.New("invalid target, must specify either topic or token")
 			continue
 		}
 
@@ -68,7 +73,7 @@ func (pp pushyProvider) Send(ctx context.Context, messages []Message) error {
 		if !ok {
 			msgsWithHash = []indexedMessage{}
 		}
-		byPayloadHash[hash] = append(msgsWithHash, indexedMessage{m, i})
+		byPayloadHash[hash] = append(msgsWithHash, indexedMessage{m, m.index})
 	}
 
 	batches := [][]indexedMessage{}

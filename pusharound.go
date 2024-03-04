@@ -67,23 +67,17 @@ func (m message) TTL() time.Duration      { return m.ttl }
 // NewMessage constructs a message with the given target, data, and TTL. A TTL of zero means the
 // value is unspecified. In this case, provider defaults will be used.
 func NewMessage(t Target, data map[string]string, ttl time.Duration) Message {
+	return message{t, data, ttl}
+}
+
+// prepareMessage for sending to a pusharound client.
+func prepareMessage(m Message) Message {
 	_data := map[string]string{}
-	for k, v := range data {
+	for k, v := range m.Data() {
 		_data[k] = v
 	}
 	_data[pusharoundKey] = "true"
-	return message{t, _data, ttl}
-}
-
-// NewRegularMessage is like NewMessage, but does not include the special pusharound signal in the
-// message. Pusharound client libraries use the presence of this signal to distinguish pusharound
-// notifications from normal notifications sent using the same account. NewRegularMessage is
-// useful for centralizing on the pusharound back-end library, sending both special pusharound
-// messages (using NewMessage) and regular application notifications (using NewRegularMessage).
-// Using NewRegularMessage in this way is not required - the pusharound back-end library can be used
-// alongside traditional mechanisms for sending application notifications.
-func NewRegularMessage(t Target, data map[string]string, ttl time.Duration) Message {
-	return message{t, data, ttl}
+	return NewMessage(m.Target(), _data, m.TTL())
 }
 
 // BatchSendError represents an error which may be returned by PushProvider.Send implementations
