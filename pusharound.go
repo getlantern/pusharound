@@ -9,19 +9,48 @@
 package pusharound
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"time"
 )
 
 const (
-	// Every notification sent via the pusharound system will include a mapping with this key set to
-	// true. This will be set in the custom data. Almost every provider supports custom key-value
-	// pairs. APNS requires background (silent) notifications to essentially only contain custom
-	// key-value pairs
-	//
-	// See https://developer.apple.com/documentation/usernotifications/pushing-background-updates-to-your-app#Create-a-background-notification.
-	pusharoundKey = "pusharound"
+	// streamIDKey is a key set in the custom data of pusharound notifications. This key will be
+	// mapped to an identifier indicating the stream to which the notification belongs. This is used
+	// to collate messages split across multiple notifications.
+	streamIDKey = "pusharound-stream-id"
+
+	// streamIDLen is the length of the stream ID value. This is a random hex-encoded byte sequence.
+	streamIDLen = 8
+
+	// streamIDNull is the stream ID set for one-off messages. When a client sees the null stream
+	// ID, it knows not to expect further messages in the stream.
+	streamIDNull = "00000000"
+
+	// streamCounterKey is a key set in the custom data of pusharound notifications. This key will
+	// be mapped to a counter indicating the total number of messages in the stream and this
+	// message's position in the stream.
+	streamCounterKey = "pusharound-stream-counter"
+
+	// streamCounterLen is the length of the stream counter value. This is a 3-digit number
+	// indicating the position of this message in the stream.
+	streamCounterLen = 3
+
+	// streamCompleteKey is a key included in the custom data of pusharound notifications. This key
+	// is included only in the last message in the stream and is mapped to an empty string.
+	streamCompleteKey = "pusharound-stream-complete"
+
+	// streamDataKey is a key included in the custom data of pusharound notifications. This key is
+	// included only for notifications which are part of a stream of many messages. One-off messages
+	// use custom keys to specify user data.
+	streamDataKey = "pusharound-stream-data"
+
+	// streamMsgOverhead is the overhead of the strings included in each message's metadata. This does
+	// not include marshaling overhead, which may add additional characters like quotes and commas.
+	streamMsgOverhead = len(streamIDKey) + streamIDLen + len(streamCounterKey) + streamCounterLen + len(streamDataKey)
 )
 
 // Target is the target for a push notification.
@@ -42,10 +71,10 @@ func (t Target) valid() bool {
 }
 
 // Message is a push notification message.
+//
+// Custom implementations of Message should wrap the implementation defined by this library. This
+// Message implementation contains metadata used to distinguish pusharound messages.
 type Message interface {
-	// Target is the intended recipient for this message.
-	Target() Target
-
 	// Data is the message payload.
 	Data() map[string]string
 
@@ -55,60 +84,183 @@ type Message interface {
 }
 
 type message struct {
-	target Target
-	data   map[string]string
-	ttl    time.Duration
+	data map[string]string
+	ttl  time.Duration
 }
 
-func (m message) Target() Target          { return m.target }
 func (m message) Data() map[string]string { return m.data }
 func (m message) TTL() time.Duration      { return m.ttl }
 
 // NewMessage constructs a message with the given target, data, and TTL. A TTL of zero means the
 // value is unspecified. In this case, provider defaults will be used.
-func NewMessage(t Target, data map[string]string, ttl time.Duration) Message {
-	return message{t, data, ttl}
-}
-
-// prepareMessage for sending to a pusharound client.
-func prepareMessage(m Message) Message {
-	_data := map[string]string{}
-	for k, v := range m.Data() {
-		_data[k] = v
-	}
-	_data[pusharoundKey] = "true"
-	return NewMessage(m.Target(), _data, m.TTL())
-}
-
-// BatchSendError represents an error which may be returned by PushProvider.Send implementations
-// when the input message slice contains more than one message.
-type BatchSendError struct {
-	// ByMessage holds the error for each message in the batch. ByMessage is exactly the length of
-	// the input message slice and ByMessage[i] provides the error for message i in the input. Some
-	// of these may be nil.
-	ByMessage []error
-
-	// ErrorString can be used to override the default implementation of Error().
-	ErrorString string
-}
-
-func (se BatchSendError) Error() string {
-	if se.ErrorString != "" {
-		return se.ErrorString
-	}
-
-	successes := 0
-	for _, err := range se.ByMessage {
-		if err == nil {
-			successes++
-		}
-	}
-	failures := len(se.ByMessage) - successes
-
-	return fmt.Sprintf("batch send error; %d succeeded, %d failed", successes, failures)
+func NewMessage(data map[string]string, ttl time.Duration) Message {
+	data[streamIDKey] = streamIDNull
+	return message{data, ttl}
 }
 
 // PushProvider is a push notification provider.
 type PushProvider interface {
-	Send(context.Context, []Message) error
+	// Send sends a group of messages.
+	Send(context.Context, []Target, Message) error
+}
+
+// Stream is a stream of data to be sent via a push notification provider.
+//
+// Custom implementations of Stream should wrap the implementation defined by this library (in
+// NewStream). The Messages produced by this Stream implementation contain important metadata needed
+// by clients to distinguish pusharound messages and collate streams.
+type Stream interface {
+	// NextMessage returns the next message in the stream. Returns nil when there are no more
+	// messages in the stream.
+	NextMessage() Message
+}
+
+type stream struct {
+	maxPayloadSize int
+	streamID       string
+	data           string
+	streamCounter  int
+}
+
+func (s *stream) NextMessage() Message {
+	if len(s.data) == 0 {
+		return nil
+	}
+
+	m := message{
+		data: map[string]string{
+			streamIDKey:      s.streamID,
+			streamCounterKey: fmt.Sprintf("%03d", s.streamCounter),
+		},
+	}
+
+	available := s.maxPayloadSize - streamMsgOverhead
+	if available >= len(s.data)+len(streamCompleteKey) {
+		// We can finish the stream.
+		m.data[streamDataKey] = s.data
+		m.data[streamCompleteKey] = ""
+	} else {
+		m.data[streamDataKey] = s.data[:available]
+		s.data = s.data[available:]
+	}
+	s.streamCounter++
+
+	return m
+}
+
+// NewStream initializes a stream of data to be sent via a push notification provider.
+//
+// maxPayloadSize specifies the maximum total amount of user data the message should contain. The
+// sum length of all keys and values in the returned message's Data map will be equal to or less
+// than this value.
+//
+// When choosing a value for maxPayloadSize, consider that marshaling will add overhead to the
+// size of the payload on the wire. For example, a payload marshaled as JSON will contain
+// additional characters like quotes, colons, and commas.
+func NewStream(data string, maxPayloadSize int) (Stream, error) {
+	id, err := newStreamID()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate stream ID: %w", err)
+	}
+
+	if maxPayloadSize <= streamMsgOverhead {
+		return nil, fmt.Errorf("payload size limit (%d) <= overhead (%d)", maxPayloadSize, streamMsgOverhead)
+	}
+
+	return &stream{
+		maxPayloadSize: maxPayloadSize,
+		streamID:       id,
+		data:           data,
+	}, nil
+}
+
+// SendStreamError is the error returned by SendStream.
+type SendStreamError struct {
+	// Remaining is a Stream of all messages which were not successfully sent.
+	Remaining Stream
+
+	// Successful is the number of messages sent successfully. This can be used to track whether
+	// retries are making progress.
+	Successful int
+
+	cause error
+}
+
+func (sse SendStreamError) Error() string {
+	return fmt.Sprintf("failed to send full stream: %v", sse.cause)
+}
+
+func (sse SendStreamError) Unwrap() error {
+	return sse.cause
+}
+
+type streamWithBufferedMessage struct {
+	buffered Message
+	s        Stream
+}
+
+func (s *streamWithBufferedMessage) NextMessage() Message {
+	if s.buffered != nil {
+		m := s.buffered
+		s.buffered = nil
+		return m
+	}
+	return s.NextMessage()
+}
+
+// SendStream sends a Stream of Messages using the specified PushProvider. Stops after the first
+// error; retries are left to the caller. Always returns a SendStreamError.
+func SendStream(ctx context.Context, p PushProvider, t []Target, s Stream) error {
+	successful := 0
+
+	for msg := s.NextMessage(); msg != nil; msg = s.NextMessage() {
+		if err := p.Send(ctx, t, msg); err != nil {
+			return SendStreamError{
+				Remaining: &streamWithBufferedMessage{
+					buffered: msg,
+					s:        s,
+				},
+				Successful: successful,
+				cause:      err,
+			}
+		}
+		successful++
+	}
+
+	return nil
+}
+
+// PartialFailure is an error returned when a message is successfully sent for some targets, but not
+// others.
+type PartialFailure struct {
+	Failed []Target
+	Cause  error
+}
+
+func (pf PartialFailure) Error() string {
+	return fmt.Sprintf("failed for %d targets: %v", len(pf.Failed), pf.Cause.Error())
+}
+
+func (pf PartialFailure) Unwrap() error {
+	return pf.Cause
+}
+
+var nullStreamID = []byte{0, 0, 0, 0}
+
+func init() {
+	if streamIDLen%2 != 0 {
+		panic("streamIDLen must be divisible by 2")
+	}
+}
+
+func newStreamID() (string, error) {
+	b := make([]byte, streamIDLen/2)
+	_, err := rand.Read(b)
+	if err != nil {
+		return "", fmt.Errorf("rand read error: %w", err)
+	}
+	if bytes.Equal(b, nullStreamID) {
+		return newStreamID()
+	}
+	return hex.EncodeToString(b), nil
 }

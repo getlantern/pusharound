@@ -3,14 +3,12 @@ package pusharound
 import (
 	"bytes"
 	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
+	"strings"
 )
 
 const (
@@ -33,130 +31,49 @@ type pushyProvider struct {
 // system. The provided HTTP client will be used to make HTTP requests to the Pushy back-end.
 //
 // See https://pushy.me.
+//
+// Messages to multiple targets will be batched, up to the 100,000 batch limit. It is an error to
+// call Send with more than 100,000 Targets or with a payload over 4KB (the payload size is the
+// size of Message.Data marshaled as JSON).
 func NewPushyProvider(client http.Client, apiKey string) PushProvider {
 	return pushyProvider{client, apiKey}
 }
 
-// Send a batch of messages. Messages with the same data payload will be batched together, up to the
-// 100,000 device limit.
-func (pp pushyProvider) Send(ctx context.Context, messages []Message) error {
-	batchErr := BatchSendError{
-		ByMessage: make([]error, len(messages)),
+func (pp pushyProvider) Send(ctx context.Context, t []Target, m Message) error {
+	if len(t) > pushyPushBatchLimit {
+		return fmt.Errorf("number of targets (%d) over batch size limit (%d)", len(t), pushyPushBatchLimit)
 	}
 
-	// TODO: break up messages with payload over 4 KB limit
-
-	type indexedMessage struct {
-		Message
-		index int
+	req := pushyPushRequest{
+		To:         make([]string, len(t)),
+		Data:       m.Data(),
+		TTLSeconds: int(m.TTL().Seconds()),
 	}
 
-	_messages := make([]indexedMessage, len(messages))
-	for i, m := range messages {
-		_messages[i] = indexedMessage{prepareMessage(m), i}
-	}
-
-	// Group messages by payload.
-	byPayloadHash := map[string][]indexedMessage{}
-	for _, m := range _messages {
-		if m.Data() == nil {
-			batchErr.ByMessage[m.index] = errors.New("no payload")
-			continue
+	// TODO: can we mix topic and device targets?
+	for i, target := range t {
+		if !target.valid() {
+			return errors.New("invalid target; must specify one of either device token or target")
 		}
-		if !m.Target().valid() {
-			batchErr.ByMessage[m.index] = errors.New("invalid target, must specify either topic or token")
-			continue
-		}
-
-		hash := hashPayload(m.Data())
-		msgsWithHash, ok := byPayloadHash[hash]
-		if !ok {
-			msgsWithHash = []indexedMessage{}
-		}
-		byPayloadHash[hash] = append(msgsWithHash, indexedMessage{m, m.index})
-	}
-
-	batches := [][]indexedMessage{}
-	for _, msgs := range byPayloadHash {
-		b := splitBatches(msgs, pushyPushBatchLimit)
-		batches = append(batches, b...)
-	}
-
-	// Each value in the map now represents a batch of messages to send, all with the same payload.
-	// For each batch, we build a request to the Pushy API and attempt to send.
-	for _, msgs := range batches {
-		req := pushyPushRequest{
-			To:   []string{},
-			Data: msgs[0].Data(),
-		}
-
-		for _, m := range msgs {
-			target := m.Target()
-
-			if target.topic != "" {
-				req.To = append(req.To, fmt.Sprintf("/topics/%s", target.topic))
-			} else {
-				req.To = append(req.To, target.deviceToken)
-			}
-		}
-
-		pushyResp, err := pp.sendPush(ctx, req)
-		if err != nil {
-			for _, m := range msgs {
-				batchErr.ByMessage[m.index] = err
-			}
-			continue
-		}
-
-		if !pushyResp.Success {
-			for _, m := range msgs {
-				// Pushy does not provide more information in this case.
-				batchErr.ByMessage[m.index] = errors.New("API request failed")
-			}
-		}
-		if len(pushyResp.Info.Failed) > 0 {
-			for _, deviceToken := range pushyResp.Info.Failed {
-				if deviceToken == "" {
-					continue
-				}
-				for _, m := range msgs {
-					if deviceToken == m.Target().deviceToken {
-						// The Pushy docs say that tokens in the failed list are those which "could
-						// not be found in our database registered under... the [provided] API key".
-						batchErr.ByMessage[m.index] = errors.New("invalid device token")
-					}
-				}
-			}
-		}
-
-	}
-
-	noErrors := true
-	for _, err := range batchErr.ByMessage {
-		if err != nil {
-			noErrors = false
-			break
+		if target.deviceToken != "" {
+			req.To[i] = target.deviceToken
+		} else {
+			req.To[i] = fmt.Sprintf("/topics/%s", target.topic)
 		}
 	}
 
-	if noErrors {
-		return nil
-	}
-	if len(batchErr.ByMessage) == 1 {
-		return batchErr.ByMessage[0]
-	}
-	return batchErr
+	return pp.sendPush(ctx, req)
 }
 
-func (pp pushyProvider) sendPush(ctx context.Context, req pushyPushRequest) (*pushyPushResponse, error) {
+func (pp pushyProvider) sendPush(ctx context.Context, req pushyPushRequest) error {
 	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("marshal error: %w", err)
+		return fmt.Errorf("marshal error: %w", err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", "https://"+pushyPushEndpoint, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("failed to construct request: %w", err)
+		return fmt.Errorf("failed to construct request: %w", err)
 	}
 
 	q := httpReq.URL.Query()
@@ -168,35 +85,53 @@ func (pp pushyProvider) sendPush(ctx context.Context, req pushyPushRequest) (*pu
 	// TODO: strip API key from returned errors; can test with schemeless URL
 	resp, err := pp.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("http error: %w", err)
+		return fmt.Errorf("http error: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		errResp, err := unmarshalPushyError(resp.Body)
 		if err != nil && errors.Is(err, io.EOF) {
-			return nil, fmt.Errorf("status '%v'", resp.Status)
+			return fmt.Errorf("status '%v'", resp.Status)
 		} else if err != nil {
-			return nil, fmt.Errorf("status '%v' but failed to parse response: %w", resp.Status, err)
+			return fmt.Errorf("status '%v' but failed to parse response: %w", resp.Status, err)
 		}
 
-		return nil, fmt.Errorf("api error: %v", errResp.Error)
+		return fmt.Errorf("api error: %v", errResp.Error)
 	}
 
 	pushyResp := new(pushyPushResponse)
 	if err := json.NewDecoder(resp.Body).Decode(pushyResp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
+		return fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	return pushyResp, nil
+	if len(pushyResp.Info.Failed) > 0 {
+		failed := make([]Target, len(pushyResp.Info.Failed))
+		for i, f := range pushyResp.Info.Failed {
+			if topic, ok := strings.CutPrefix(f, "/topics/"); ok {
+				failed[i] = TopicTarget(topic)
+			} else {
+				failed[i] = DeviceTarget(f)
+			}
+		}
+
+		return PartialFailure{Failed: failed, Cause: errors.New("API request failed")}
+	}
+	if !pushyResp.Success {
+		// Pushy does not provide more information in this case.
+		return errors.New("API request failed")
+	}
+
+	return nil
 }
 
 // Pushy API request and response formats are defined at https://pushy.me/docs/api.
 
 // pushyPushRequest is a request to the Pushy API's push endpoint.
 type pushyPushRequest struct {
-	To   []string          `json:"to"`
-	Data map[string]string `json:"data"`
+	To         []string          `json:"to"`
+	Data       map[string]string `json:"data"`
+	TTLSeconds int               `json:"time_to_live"`
 }
 
 // pushyPushResponse is a response from the Pushy API's push endpoint.
@@ -232,49 +167,4 @@ func unmarshalPushyError(r io.Reader) (*pushyErrorResponse, error) {
 	}
 
 	return errResp, nil
-}
-
-func hashPayload(payload map[string]string) string {
-	// We need to write items from the map in a consistent order, so we sort the keys.
-	keys := make([]string, 0, len(payload))
-	for k := range payload {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	// We write each map entry to the hash, using dashes and newlines as separators. It is possible
-	// to construct two different maps which collide due to this scheme, but this is extremely
-	// unlikely for our input.
-	h := md5.New()
-	for _, k := range keys {
-		fmt.Fprintf(h, "%s-%s", k, payload[k])
-		fmt.Fprintln(h)
-	}
-	return hex.EncodeToString(h.Sum(nil))
-}
-
-// splitBatches splits the input messages into batches, each under the batch size limit.
-func splitBatches[T any](msgs []T, batchLimit int) [][]T {
-	if len(msgs) == 0 {
-		return [][]T{}
-	}
-	if len(msgs) <= batchLimit {
-		return [][]T{msgs}
-	}
-
-	batches := [][]T{}
-	currentBatch := make([]T, 0, batchLimit)
-
-	for i := 0; i < len(msgs); i++ {
-		if i != 0 && i%batchLimit == 0 {
-			batches = append(batches, currentBatch)
-			currentBatch = []T{}
-		}
-		currentBatch = append(currentBatch, msgs[i])
-	}
-
-	if len(currentBatch) > 0 {
-		batches = append(batches, currentBatch)
-	}
-	return batches
 }
