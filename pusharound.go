@@ -41,7 +41,7 @@ const (
 
 	// streamCompleteKey is a key included in the custom data of pusharound notifications. This key
 	// is included only in the last message in the stream and is mapped to an empty string.
-	streamCompleteKey = "pusharound-stream-complete"
+	streamCompleteKey = "pusharound-stream-ok"
 
 	// streamDataKey is a key included in the custom data of pusharound notifications. This key is
 	// included only for notifications which are part of a stream of many messages. One-off messages
@@ -52,6 +52,14 @@ const (
 	// not include marshaling overhead, which may add additional characters like quotes and commas.
 	streamMsgOverhead = len(streamIDKey) + streamIDLen + len(streamCounterKey) + streamCounterLen + len(streamDataKey)
 )
+
+func init() {
+	if len(streamCompleteKey) > len(streamDataKey) {
+		// This is necessary to ensure we can send a final message in certain edge cases.
+		// See stream.needsEmptyCompletionMessage
+		panic("len(streamCompleteKey) must be <= len(streamDataKey)")
+	}
+}
 
 // Target is the target for a push notification.
 type Target struct {
@@ -77,6 +85,9 @@ func (t Target) valid() bool {
 type Message interface {
 	// Data is the message payload.
 	Data() map[string]string
+
+	// TODO: parameterize functions on Message interface; create PushyMessage with TTL
+	// or: do all other providers use TTL?
 
 	// TTL specifies how long this message should be stored (on the provider) for delivery. A value
 	// of zero indicates that the TTL is unspecified. In this case, provider defaults will be used.
@@ -120,13 +131,16 @@ type stream struct {
 	streamID       string
 	data           string
 	streamCounter  int
+
+	// There is an edge case in the form of a highly constrained payload
+	// (s.maxPayloadSize > streamMsgOverhead && s.maxPayloadSize < streamMsgOverhead+len(streamCompleteKey))
+	// or a payload which divides such that the last message does not leave room for the
+	// stream-complete key. In both of these cases, we send the final data payload, then follow with
+	// a stream-complete message with no data.
+	needsEmptyCompletionMessage bool
 }
 
 func (s *stream) NextMessage() Message {
-	if len(s.data) == 0 {
-		return nil
-	}
-
 	m := message{
 		data: map[string]string{
 			streamIDKey:      s.streamID,
@@ -134,16 +148,33 @@ func (s *stream) NextMessage() Message {
 		},
 	}
 
+	if s.needsEmptyCompletionMessage {
+		s.needsEmptyCompletionMessage = false
+		m.data[streamCompleteKey] = ""
+		return m
+	}
+
+	if len(s.data) == 0 {
+		return nil
+	}
+
 	available := s.maxPayloadSize - streamMsgOverhead
 	if available >= len(s.data)+len(streamCompleteKey) {
 		// We can finish the stream.
 		m.data[streamDataKey] = s.data
 		m.data[streamCompleteKey] = ""
+		s.data = ""
 	} else {
-		m.data[streamDataKey] = s.data[:available]
-		s.data = s.data[available:]
+		end := min(available, len(s.data))
+		m.data[streamDataKey] = s.data[:end]
+		s.data = s.data[end:]
 	}
 	s.streamCounter++
+
+	// Edge case: see stream.needsEmptyCompletionMessage.
+	if _, ok := m.data[streamCompleteKey]; s.data == "" && !ok {
+		s.needsEmptyCompletionMessage = true
+	}
 
 	return m
 }
@@ -205,7 +236,7 @@ func (s *streamWithBufferedMessage) NextMessage() Message {
 		s.buffered = nil
 		return m
 	}
-	return s.NextMessage()
+	return s.s.NextMessage()
 }
 
 // SendStream sends a Stream of Messages using the specified PushProvider. Stops after the first
@@ -249,6 +280,7 @@ var nullStreamID = []byte{0, 0, 0, 0}
 
 func init() {
 	if streamIDLen%2 != 0 {
+		// Necessary for the byte-length to hex-length conversion below.
 		panic("streamIDLen must be divisible by 2")
 	}
 }
@@ -263,4 +295,11 @@ func newStreamID() (string, error) {
 		return newStreamID()
 	}
 	return hex.EncodeToString(b), nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
