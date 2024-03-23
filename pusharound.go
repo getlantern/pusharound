@@ -17,6 +17,9 @@ import (
 	"time"
 )
 
+// Push notification messages carry custom payload data in a map. Pusharound uses special keys in
+// this map to send metadata used by pusharound clients to collate streams and to distinguish
+// pusharound messages from standard push notifications.
 const (
 	// streamIDKey is a key set in the custom data of pusharound notifications. This key will be
 	// mapped to an identifier indicating the stream to which the notification belongs. This is used
@@ -80,8 +83,9 @@ func (t Target) valid() bool {
 
 // Message is a push notification message.
 //
-// Custom implementations of Message should wrap the implementation defined by this library. This
-// Message implementation contains metadata used to distinguish pusharound messages.
+// Custom implementations of Message should embed the implementation defined by this library (in
+// NewMessage). This Message implementation contains metadata used to distinguish pusharound
+// messages.
 type Message interface {
 	// Data is the message payload.
 	Data() map[string]string
@@ -111,13 +115,13 @@ func NewMessage(data map[string]string, ttl time.Duration) Message {
 
 // PushProvider is a push notification provider.
 type PushProvider interface {
-	// Send sends a group of messages.
+	// Send sends a message to a group of targets.
 	Send(context.Context, []Target, Message) error
 }
 
 // Stream is a stream of data to be sent via a push notification provider.
 //
-// Custom implementations of Stream should wrap the implementation defined by this library (in
+// Custom implementations of Stream should embed the implementation defined by this library (in
 // NewStream). The Messages produced by this Stream implementation contain important metadata needed
 // by clients to distinguish pusharound messages and collate streams.
 type Stream interface {
