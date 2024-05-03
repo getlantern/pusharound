@@ -111,7 +111,7 @@ func TestPushySend(t *testing.T) {
 		require.Error(t, err)
 
 		pf := new(PartialFailure)
-		require.True(t, errors.As(err, pf))
+		require.ErrorAs(t, err, pf)
 
 		require.Len(t, pf.Failed, 2)
 		require.Contains(t, pf.Failed, DeviceTarget("0"))

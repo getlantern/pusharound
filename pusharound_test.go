@@ -104,7 +104,7 @@ func TestSendStream(t *testing.T) {
 		require.Error(t, err)
 
 		sse := new(SendStreamError)
-		require.True(t, errors.As(err, sse))
+		require.ErrorAs(t, err, sse)
 
 		require.Equal(t, 1, sse.Successful)
 
