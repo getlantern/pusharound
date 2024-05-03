@@ -34,8 +34,7 @@ const (
 	streamIDNull = "00000000"
 
 	// streamCounterKey is a key set in the custom data of pusharound notifications. This key will
-	// be mapped to a counter indicating the total number of messages in the stream and this
-	// message's position in the stream.
+	// be mapped to a counter indicating this message's position in the stream.
 	streamCounterKey = "pusharound-stream-counter"
 
 	// streamCounterLen is the length of the stream counter value. This is a 3-digit number
