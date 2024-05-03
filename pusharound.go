@@ -30,7 +30,8 @@ const (
 	streamIDLen = 8
 
 	// streamIDNull is the stream ID set for one-off messages. When a client sees the null stream
-	// ID, it knows not to expect further messages in the stream.
+	// ID, it knows not to expect further messages in the stream. Streams, in contrast to one-off
+	// messages will use unique stream IDs and will never use the null stream ID.
 	streamIDNull = "00000000"
 
 	// streamCounterKey is a key set in the custom data of pusharound notifications. This key will
@@ -42,7 +43,8 @@ const (
 	streamCounterLen = 3
 
 	// streamCompleteKey is a key included in the custom data of pusharound notifications. This key
-	// is included only in the last message in the stream and is mapped to an empty string.
+	// is included only in the last message in the stream and is mapped to an empty string. The
+	// presence of this key indicates to the client that this is the last message in the stream.
 	streamCompleteKey = "pusharound-stream-ok"
 
 	// streamDataKey is a key included in the custom data of pusharound notifications. This key is
