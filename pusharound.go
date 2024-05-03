@@ -34,27 +34,27 @@ const (
 	// messages will use unique stream IDs and will never use the null stream ID.
 	streamIDNull = "00000000"
 
-	// streamCounterKey is a key set in the custom data of pusharound notifications. This key will
-	// be mapped to a counter indicating this message's position in the stream.
-	streamCounterKey = "pusharound-stream-counter"
+	// streamIndexKey is a key set in the custom data of pusharound notifications. This key will
+	// be mapped to an integer indicating this message's position in the stream.
+	streamIndexKey = "pusharound-index"
 
-	// streamCounterLen is the length of the stream counter value. This is a 3-digit number
-	// indicating the position of this message in the stream.
-	streamCounterLen = 3
+	// streamIndexLen is the length of the stream index value. This is a 3-digit number indicating
+	// the position of this message in the stream.
+	streamIndexLen = 3
 
 	// streamCompleteKey is a key included in the custom data of pusharound notifications. This key
 	// is included only in the last message in the stream and is mapped to an empty string. The
 	// presence of this key indicates to the client that this is the last message in the stream.
-	streamCompleteKey = "pusharound-stream-ok"
+	streamCompleteKey = "pusharound-ok"
 
 	// streamDataKey is a key included in the custom data of pusharound notifications. This key is
 	// included only for notifications which are part of a stream of many messages. One-off messages
 	// use custom keys to specify user data.
-	streamDataKey = "pusharound-stream-data"
+	streamDataKey = "pusharound-data"
 
 	// streamMsgOverhead is the overhead of the strings included in each message's metadata. This does
 	// not include marshaling overhead, which may add additional characters like quotes and commas.
-	streamMsgOverhead = len(streamIDKey) + streamIDLen + len(streamCounterKey) + streamCounterLen + len(streamDataKey)
+	streamMsgOverhead = len(streamIDKey) + streamIDLen + len(streamIndexKey) + streamIndexLen + len(streamDataKey)
 )
 
 func init() {
@@ -135,7 +135,7 @@ type stream struct {
 	maxPayloadSize int
 	streamID       string
 	data           string
-	streamCounter  int
+	currentIndex   int
 
 	// There is an edge case in the form of a highly constrained payload
 	// (s.maxPayloadSize > streamMsgOverhead && s.maxPayloadSize < streamMsgOverhead+len(streamCompleteKey))
@@ -148,8 +148,8 @@ type stream struct {
 func (s *stream) NextMessage() Message {
 	m := message{
 		data: map[string]string{
-			streamIDKey:      s.streamID,
-			streamCounterKey: fmt.Sprintf("%03d", s.streamCounter),
+			streamIDKey:    s.streamID,
+			streamIndexKey: fmt.Sprintf("%03d", s.currentIndex),
 		},
 	}
 
@@ -174,7 +174,7 @@ func (s *stream) NextMessage() Message {
 		m.data[streamDataKey] = s.data[:end]
 		s.data = s.data[end:]
 	}
-	s.streamCounter++
+	s.currentIndex++
 
 	// Edge case: see stream.needsEmptyCompletionMessage.
 	if _, ok := m.data[streamCompleteKey]; s.data == "" && !ok {

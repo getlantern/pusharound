@@ -133,7 +133,7 @@ func collate(t *testing.T, m []Message) string {
 
 	parsed := make([]parsedMessage, len(m))
 	for i := range m {
-		require.Contains(t, m[i].Data(), streamCounterKey)
+		require.Contains(t, m[i].Data(), streamIndexKey)
 		require.Contains(t, m[i].Data(), streamIDKey)
 		require.Equal(t, m[0].Data()[streamIDKey], m[i].Data()[streamIDKey])
 
@@ -141,7 +141,7 @@ func collate(t *testing.T, m []Message) string {
 			require.Contains(t, m[i].Data(), streamDataKey)
 		}
 
-		counter, err := strconv.Atoi(m[i].Data()[streamCounterKey])
+		counter, err := strconv.Atoi(m[i].Data()[streamIndexKey])
 		require.NoError(t, err)
 
 		parsed[i] = parsedMessage{
