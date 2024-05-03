@@ -78,6 +78,12 @@ func DeviceTarget(deviceToken string) Target { return Target{deviceToken: device
 // TopicTarget is a target topic for a push notification.
 func TopicTarget(topic string) Target { return Target{topic: topic} }
 
+// Topic returns the topic name if this is a topic target and an empty string otherwise.
+func (t Target) Topic() string { return t.topic }
+
+// DeviceToken returns the device token if this is a device target and an empty string otherwise.
+func (t Target) DeviceToken() string { return t.deviceToken }
+
 func (t Target) valid() bool {
 	return (t.topic == "" || t.deviceToken == "") && t.topic != t.deviceToken
 }
