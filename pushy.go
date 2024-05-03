@@ -35,11 +35,11 @@ type pushyProvider struct {
 // Messages to multiple targets will be batched, up to the 100,000 batch limit. It is an error to
 // call Send with more than 100,000 Targets or with a payload over 4KB (the payload size is the
 // size of Message.Data marshaled as JSON).
-func NewPushyProvider(client http.Client, apiKey string) PushProvider {
+func NewPushyProvider(client http.Client, apiKey string) PushProvider[TTLMessage] {
 	return pushyProvider{client, apiKey}
 }
 
-func (pp pushyProvider) Send(ctx context.Context, t []Target, m Message) error {
+func (pp pushyProvider) Send(ctx context.Context, t []Target, m TTLMessage) error {
 	if len(t) > pushyPushBatchLimit {
 		return fmt.Errorf("number of targets (%d) over batch size limit (%d)", len(t), pushyPushBatchLimit)
 	}

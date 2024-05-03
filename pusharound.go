@@ -90,58 +90,71 @@ func (t Target) valid() bool {
 
 // Message is a push notification message.
 //
-// Custom implementations of Message should embed the implementation defined by this library (in
+// Custom implementations of Message should embed the implementation defined by this library (via
 // NewMessage). This Message implementation contains metadata used to distinguish pusharound
-// messages.
+// messages. TTLMessage can be used as an example.
 type Message interface {
 	// Data is the message payload.
 	Data() map[string]string
-
-	// TODO: parameterize functions on Message interface; create PushyMessage with TTL
-	// or: do all other providers use TTL?
-
-	// TTL specifies how long this message should be stored (on the provider) for delivery. A value
-	// of zero indicates that the TTL is unspecified. In this case, provider defaults will be used.
-	TTL() time.Duration
 }
 
 type message struct {
 	data map[string]string
-	ttl  time.Duration
 }
 
 func (m message) Data() map[string]string { return m.data }
-func (m message) TTL() time.Duration      { return m.ttl }
 
-// NewMessage constructs a message with the given data and TTL. A TTL of zero means the value is
-// unspecified. In this case, provider defaults will be used.
-func NewMessage(data map[string]string, ttl time.Duration) Message {
+// NewMessage constructs a message with the given data.
+func NewMessage(data map[string]string) Message {
 	data[streamIDKey] = streamIDNull
-	return message{data, ttl}
+	return message{data}
 }
 
+// TTLMessage is a Message with a configured time-to-live.
+type TTLMessage interface {
+	Message
+
+	// TTL is the time-to-live for this message. A value of zero indicates that the provider default
+	// should be used.
+	TTL() time.Duration
+}
+
+type ttlMessage struct {
+	Message
+	ttl time.Duration
+}
+
+// NewTTLMessage constructs a message with the given data and TTL. A TTL of zero means the value is
+// unspecified. In this case, provider defaults will be used.
+func NewTTLMessage(data map[string]string, ttl time.Duration) TTLMessage {
+	return ttlMessage{NewMessage(data), ttl}
+}
+
+func (m ttlMessage) TTL() time.Duration { return m.ttl }
+
 // PushProvider is a push notification provider.
-type PushProvider interface {
+type PushProvider[M Message] interface {
 	// Send sends a message to a group of targets.
-	Send(context.Context, []Target, Message) error
+	Send(context.Context, []Target, M) error
 }
 
 // Stream is a stream of data to be sent via a push notification provider.
 //
-// Custom implementations of Stream should embed the implementation defined by this library (in
+// Custom implementations of Stream should embed the implementation defined by this library (via
 // NewStream). The Messages produced by this Stream implementation contain important metadata needed
 // by clients to distinguish pusharound messages and collate streams.
-type Stream interface {
+type Stream[M Message] interface {
 	// NextMessage returns the next message in the stream. Returns nil when there are no more
 	// messages in the stream.
-	NextMessage() Message
+	NextMessage() (M, bool)
 }
 
-type stream struct {
+type stream[M Message] struct {
 	maxPayloadSize int
 	streamID       string
 	data           string
 	currentIndex   int
+	newMsg         func(map[string]string) M
 
 	// There is an edge case in the form of a highly constrained payload
 	// (s.maxPayloadSize > streamMsgOverhead && s.maxPayloadSize < streamMsgOverhead+len(streamCompleteKey))
@@ -151,55 +164,59 @@ type stream struct {
 	needsEmptyCompletionMessage bool
 }
 
-func (s *stream) NextMessage() Message {
-	m := message{
-		data: map[string]string{
-			streamIDKey:    s.streamID,
-			streamIndexKey: fmt.Sprintf("%03d", s.currentIndex),
-		},
+func (s *stream[M]) NextMessage() (M, bool) {
+	msgData := map[string]string{
+		streamIDKey:    s.streamID,
+		streamIndexKey: fmt.Sprintf("%03d", s.currentIndex),
 	}
 
 	if s.needsEmptyCompletionMessage {
 		s.needsEmptyCompletionMessage = false
-		m.data[streamCompleteKey] = ""
-		return m
+		msgData[streamCompleteKey] = ""
+		return s.newMsg(msgData), true
 	}
 
 	if len(s.data) == 0 {
-		return nil
+		var zeroValue M
+		return zeroValue, false
 	}
 
 	available := s.maxPayloadSize - streamMsgOverhead
 	if available >= len(s.data)+len(streamCompleteKey) {
 		// We can finish the stream.
-		m.data[streamDataKey] = s.data
-		m.data[streamCompleteKey] = ""
+		msgData[streamDataKey] = s.data
+		msgData[streamCompleteKey] = ""
 		s.data = ""
 	} else {
 		end := min(available, len(s.data))
-		m.data[streamDataKey] = s.data[:end]
+		msgData[streamDataKey] = s.data[:end]
 		s.data = s.data[end:]
 	}
 	s.currentIndex++
 
 	// Edge case: see stream.needsEmptyCompletionMessage.
-	if _, ok := m.data[streamCompleteKey]; s.data == "" && !ok {
+	if _, ok := msgData[streamCompleteKey]; s.data == "" && !ok {
 		s.needsEmptyCompletionMessage = true
 	}
 
-	return m
+	return s.newMsg(msgData), true
 }
 
 // NewStream initializes a stream of data to be sent via a push notification provider.
 //
+// The function newMsg is used to construct messages in the stream.
+//
 // maxPayloadSize specifies the maximum total amount of user data the message should contain. The
-// sum length of all keys and values in the returned message's Data map will be equal to or less
-// than this value.
+// sum length of all keys and values in the input to newMsg (msgData) will be less than or equal to
+// this value. If newMsg will add data of its own, then maxPayloadSize should take this into
+// account.
 //
 // When choosing a value for maxPayloadSize, consider that marshaling will add overhead to the
 // size of the payload on the wire. For example, a payload marshaled as JSON will contain
 // additional characters like quotes, colons, and commas.
-func NewStream(data string, maxPayloadSize int) (Stream, error) {
+func NewStream[M Message](
+	data string, maxPayloadSize int, newMsg func(msgData map[string]string) M) (Stream[M], error) {
+
 	id, err := newStreamID()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate stream ID: %w", err)
@@ -209,17 +226,18 @@ func NewStream(data string, maxPayloadSize int) (Stream, error) {
 		return nil, fmt.Errorf("payload size limit (%d) <= overhead (%d)", maxPayloadSize, streamMsgOverhead)
 	}
 
-	return &stream{
+	return &stream[M]{
 		maxPayloadSize: maxPayloadSize,
 		streamID:       id,
 		data:           data,
+		newMsg:         newMsg,
 	}, nil
 }
 
 // SendStreamError is the error returned by SendStream.
-type SendStreamError struct {
+type SendStreamError[M Message] struct {
 	// Remaining is a Stream of all messages which were not successfully sent.
-	Remaining Stream
+	Remaining Stream[M]
 
 	// Successful is the number of messages sent successfully. This can be used to track whether
 	// retries are making progress.
@@ -228,38 +246,38 @@ type SendStreamError struct {
 	cause error
 }
 
-func (sse SendStreamError) Error() string {
+func (sse SendStreamError[M]) Error() string {
 	return fmt.Sprintf("failed to send full stream: %v", sse.cause)
 }
 
-func (sse SendStreamError) Unwrap() error {
+func (sse SendStreamError[M]) Unwrap() error {
 	return sse.cause
 }
 
-type streamWithBufferedMessage struct {
-	buffered Message
-	s        Stream
+type streamWithBufferedMessage[M Message] struct {
+	buffered *M
+	s        Stream[M]
 }
 
-func (s *streamWithBufferedMessage) NextMessage() Message {
+func (s *streamWithBufferedMessage[M]) NextMessage() (M, bool) {
 	if s.buffered != nil {
 		m := s.buffered
 		s.buffered = nil
-		return m
+		return *m, true
 	}
 	return s.s.NextMessage()
 }
 
 // SendStream sends a Stream of Messages using the specified PushProvider. Stops after the first
 // error; retries are left to the caller. Returned errors are always SendStreamError.
-func SendStream(ctx context.Context, p PushProvider, t []Target, s Stream) error {
+func SendStream[M Message](ctx context.Context, p PushProvider[M], t []Target, s Stream[M]) error {
 	successful := 0
 
-	for msg := s.NextMessage(); msg != nil; msg = s.NextMessage() {
+	for msg, ok := s.NextMessage(); ok; msg, ok = s.NextMessage() {
 		if err := p.Send(ctx, t, msg); err != nil {
-			return SendStreamError{
-				Remaining: &streamWithBufferedMessage{
-					buffered: msg,
+			return SendStreamError[M]{
+				Remaining: &streamWithBufferedMessage[M]{
+					buffered: &msg,
 					s:        s,
 				},
 				Successful: successful,

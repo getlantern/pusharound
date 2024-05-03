@@ -27,7 +27,7 @@ func TestPushySend(t *testing.T) {
 			targets = []Target{
 				DeviceTarget(deviceToken),
 			}
-			msg = NewMessage(
+			msg = NewTTLMessage(
 				map[string]string{"message": message},
 				0,
 			)
@@ -54,7 +54,7 @@ func TestPushySend(t *testing.T) {
 				DeviceTarget("token-2"),
 				DeviceTarget("token-3"),
 			}
-			msg = NewMessage(
+			msg = NewTTLMessage(
 				map[string]string{"message": message},
 				0,
 			)
@@ -79,7 +79,7 @@ func TestPushySend(t *testing.T) {
 				DeviceTarget("2"),
 				DeviceTarget("3"),
 			}
-			msg = NewMessage(
+			msg = NewTTLMessage(
 				map[string]string{"message": "hello0"},
 				0,
 			)
@@ -121,7 +121,7 @@ func TestPushySend(t *testing.T) {
 }
 
 type mockPushyProvider struct {
-	PushProvider
+	PushProvider[TTLMessage]
 	closeChan chan struct{}
 }
 

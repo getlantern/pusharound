@@ -16,11 +16,11 @@ func TestNewStream(t *testing.T) {
 	t.Run("simple", func(t *testing.T) {
 		data := randStringData(100000)
 
-		s, err := NewStream(data, streamMsgOverhead+10000)
+		s, err := NewStream(data, streamMsgOverhead+10000, NewMessage)
 		require.NoError(t, err)
 
 		msgs := []Message{}
-		for m := s.NextMessage(); m != nil; m = s.NextMessage() {
+		for m, ok := s.NextMessage(); ok; m, ok = s.NextMessage() {
 			msgs = append(msgs, m)
 		}
 
@@ -32,11 +32,11 @@ func TestNewStream(t *testing.T) {
 	t.Run("divisor not a factor", func(t *testing.T) {
 		data := randStringData(1000)
 
-		s, err := NewStream(data, streamMsgOverhead+101)
+		s, err := NewStream(data, streamMsgOverhead+101, NewMessage)
 		require.NoError(t, err)
 
 		msgs := []Message{}
-		for m := s.NextMessage(); m != nil; m = s.NextMessage() {
+		for m, ok := s.NextMessage(); ok; m, ok = s.NextMessage() {
 			msgs = append(msgs, m)
 		}
 
@@ -48,11 +48,11 @@ func TestNewStream(t *testing.T) {
 	t.Run("completion includes data", func(t *testing.T) {
 		data := randStringData(10000)
 
-		s, err := NewStream(data, streamMsgOverhead+4000)
+		s, err := NewStream(data, streamMsgOverhead+4000, NewMessage)
 		require.NoError(t, err)
 
 		msgs := []Message{}
-		for m := s.NextMessage(); m != nil; m = s.NextMessage() {
+		for m, ok := s.NextMessage(); ok; m, ok = s.NextMessage() {
 			msgs = append(msgs, m)
 		}
 
@@ -63,11 +63,11 @@ func TestNewStream(t *testing.T) {
 	t.Run("small data overhead", func(t *testing.T) {
 		data := randStringData(100)
 
-		s, err := NewStream(data, streamMsgOverhead+1)
+		s, err := NewStream(data, streamMsgOverhead+1, NewMessage)
 		require.NoError(t, err)
 
 		msgs := []Message{}
-		for m := s.NextMessage(); m != nil; m = s.NextMessage() {
+		for m, ok := s.NextMessage(); ok; m, ok = s.NextMessage() {
 			msgs = append(msgs, m)
 		}
 
@@ -82,7 +82,7 @@ func TestSendStream(t *testing.T) {
 		data := randStringData(10000)
 		target := DeviceTarget("device-token")
 
-		s, err := NewStream(data, 4000)
+		s, err := NewStream(data, 4000, NewMessage)
 		require.NoError(t, err)
 
 		mp := newMockProvider(-1)
@@ -96,14 +96,14 @@ func TestSendStream(t *testing.T) {
 		data := randStringData(10000)
 		target := DeviceTarget("device-token")
 
-		s, err := NewStream(data, 4000)
+		s, err := NewStream(data, 4000, NewMessage)
 		require.NoError(t, err)
 
 		mp := newMockProvider(1)
 		err = SendStream(context.Background(), mp, []Target{target}, s)
 		require.Error(t, err)
 
-		sse := new(SendStreamError)
+		sse := new(SendStreamError[Message])
 		require.ErrorAs(t, err, sse)
 
 		require.Equal(t, 1, sse.Successful)
