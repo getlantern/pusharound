@@ -58,7 +58,7 @@ func (pp pushyProvider) Send(ctx context.Context, t []Target, m Message) error {
 		if target.deviceToken != "" {
 			req.To[i] = target.deviceToken
 		} else {
-			req.To[i] = fmt.Sprintf("/topics/%s", target.topic)
+			req.To[i] = "/topics/" + target.topic
 		}
 	}
 
