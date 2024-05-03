@@ -60,7 +60,7 @@ func TestNewStream(t *testing.T) {
 		assert.Equal(t, data, collate(t, msgs))
 	})
 
-	t.Run("small overhead", func(t *testing.T) {
+	t.Run("small data overhead", func(t *testing.T) {
 		data := randStringData(100)
 
 		s, err := NewStream(data, streamMsgOverhead+1)
