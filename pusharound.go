@@ -245,7 +245,7 @@ func (s *streamWithBufferedMessage) NextMessage() Message {
 }
 
 // SendStream sends a Stream of Messages using the specified PushProvider. Stops after the first
-// error; retries are left to the caller. Always returns a SendStreamError.
+// error; retries are left to the caller. Returned errors are always SendStreamError.
 func SendStream(ctx context.Context, p PushProvider, t []Target, s Stream) error {
 	successful := 0
 
