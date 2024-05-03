@@ -91,7 +91,7 @@ func (pp pushyProvider) sendPush(ctx context.Context, req pushyPushRequest) erro
 
 	if resp.StatusCode != http.StatusOK {
 		errResp, err := unmarshalPushyError(resp.Body)
-		if err != nil && errors.Is(err, io.EOF) {
+		if errors.Is(err, io.EOF) {
 			return fmt.Errorf("status '%v'", resp.Status)
 		} else if err != nil {
 			return fmt.Errorf("status '%v' but failed to parse response: %w", resp.Status, err)
