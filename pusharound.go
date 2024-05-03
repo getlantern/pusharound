@@ -105,8 +105,8 @@ type message struct {
 func (m message) Data() map[string]string { return m.data }
 func (m message) TTL() time.Duration      { return m.ttl }
 
-// NewMessage constructs a message with the given target, data, and TTL. A TTL of zero means the
-// value is unspecified. In this case, provider defaults will be used.
+// NewMessage constructs a message with the given data and TTL. A TTL of zero means the value is
+// unspecified. In this case, provider defaults will be used.
 func NewMessage(data map[string]string, ttl time.Duration) Message {
 	data[streamIDKey] = streamIDNull
 	return message{data, ttl}
