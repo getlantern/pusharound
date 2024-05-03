@@ -20,7 +20,7 @@ func TestNewStream(t *testing.T) {
 		require.NoError(t, err)
 
 		msgs := []Message{}
-		for m, ok := s.NextMessage(); ok; m, ok = s.NextMessage() {
+		for m, ok := s.next(); ok; m, ok = s.next() {
 			msgs = append(msgs, m)
 		}
 
@@ -36,7 +36,7 @@ func TestNewStream(t *testing.T) {
 		require.NoError(t, err)
 
 		msgs := []Message{}
-		for m, ok := s.NextMessage(); ok; m, ok = s.NextMessage() {
+		for m, ok := s.next(); ok; m, ok = s.next() {
 			msgs = append(msgs, m)
 		}
 
@@ -52,7 +52,7 @@ func TestNewStream(t *testing.T) {
 		require.NoError(t, err)
 
 		msgs := []Message{}
-		for m, ok := s.NextMessage(); ok; m, ok = s.NextMessage() {
+		for m, ok := s.next(); ok; m, ok = s.next() {
 			msgs = append(msgs, m)
 		}
 
@@ -67,7 +67,7 @@ func TestNewStream(t *testing.T) {
 		require.NoError(t, err)
 
 		msgs := []Message{}
-		for m, ok := s.NextMessage(); ok; m, ok = s.NextMessage() {
+		for m, ok := s.next(); ok; m, ok = s.next() {
 			msgs = append(msgs, m)
 		}
 
@@ -86,7 +86,7 @@ func TestSendStream(t *testing.T) {
 		require.NoError(t, err)
 
 		mp := newMockProvider(-1)
-		require.NoError(t, SendStream(context.Background(), mp, []Target{target}, s))
+		require.NoError(t, s.Send(context.Background(), mp, []Target{target}))
 
 		roundtripped := collate(t, mp.sent)
 		require.Equal(t, data, roundtripped)
@@ -100,7 +100,7 @@ func TestSendStream(t *testing.T) {
 		require.NoError(t, err)
 
 		mp := newMockProvider(1)
-		err = SendStream(context.Background(), mp, []Target{target}, s)
+		err = s.Send(context.Background(), mp, []Target{target})
 		require.Error(t, err)
 
 		sse := new(SendStreamError[Message])
@@ -109,7 +109,7 @@ func TestSendStream(t *testing.T) {
 		require.Equal(t, 1, sse.Successful)
 
 		mp.errorAfter = -1
-		require.NoError(t, SendStream(context.Background(), mp, []Target{target}, sse.Remaining))
+		require.NoError(t, sse.Remaining.Send(context.Background(), mp, []Target{target}))
 
 		roundtripped := collate(t, mp.sent)
 		require.Equal(t, data, roundtripped)

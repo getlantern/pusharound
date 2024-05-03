@@ -139,22 +139,16 @@ type PushProvider[M Message] interface {
 }
 
 // Stream is a stream of data to be sent via a push notification provider.
-//
-// Custom implementations of Stream should embed the implementation defined by this library (via
-// NewStream). The Messages produced by this Stream implementation contain important metadata needed
-// by clients to distinguish pusharound messages and collate streams.
-type Stream[M Message] interface {
-	// NextMessage returns the next message in the stream. Returns nil when there are no more
-	// messages in the stream.
-	NextMessage() (M, bool)
-}
-
-type stream[M Message] struct {
+type Stream[M Message] struct {
 	maxPayloadSize int
 	streamID       string
 	data           string
 	currentIndex   int
 	newMsg         func(map[string]string) M
+
+	// A buffered message, to be sent first before any other changes to this Stream. This only
+	// occurs when Stream.Send encounters an error partway through.
+	buffered *M
 
 	// There is an edge case in the form of a highly constrained payload
 	// (s.maxPayloadSize > streamMsgOverhead && s.maxPayloadSize < streamMsgOverhead+len(streamCompleteKey))
@@ -164,7 +158,46 @@ type stream[M Message] struct {
 	needsEmptyCompletionMessage bool
 }
 
-func (s *stream[M]) NextMessage() (M, bool) {
+// NewStream initializes a stream of data to be sent via a push notification provider.
+//
+// The function newMsg is used to construct messages in the stream.
+//
+// maxPayloadSize specifies the maximum total amount of user data the message should contain. The
+// sum length of all keys and values in the input to newMsg (msgData) will be less than or equal to
+// this value. If newMsg will add data of its own, then maxPayloadSize should take this into
+// account.
+//
+// When choosing a value for maxPayloadSize, consider that marshaling will add overhead to the
+// size of the payload on the wire. For example, a payload marshaled as JSON will contain
+// additional characters like quotes, colons, and commas.
+func NewStream[M Message](
+	data string, maxPayloadSize int, newMsg func(msgData map[string]string) M) (*Stream[M], error) {
+
+	id, err := newStreamID()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate stream ID: %w", err)
+	}
+
+	if maxPayloadSize <= streamMsgOverhead {
+		return nil, fmt.Errorf("payload size limit (%d) <= overhead (%d)", maxPayloadSize, streamMsgOverhead)
+	}
+
+	return &Stream[M]{
+		maxPayloadSize: maxPayloadSize,
+		streamID:       id,
+		data:           data,
+		newMsg:         newMsg,
+	}, nil
+}
+
+// next returns the next message in this Stream. Returns false iff there are no more messages.
+func (s *Stream[M]) next() (M, bool) {
+	if s.buffered != nil {
+		m := s.buffered
+		s.buffered = nil
+		return *m, true
+	}
+
 	msgData := map[string]string{
 		streamIDKey:    s.streamID,
 		streamIndexKey: fmt.Sprintf("%03d", s.currentIndex),
@@ -202,42 +235,30 @@ func (s *stream[M]) NextMessage() (M, bool) {
 	return s.newMsg(msgData), true
 }
 
-// NewStream initializes a stream of data to be sent via a push notification provider.
-//
-// The function newMsg is used to construct messages in the stream.
-//
-// maxPayloadSize specifies the maximum total amount of user data the message should contain. The
-// sum length of all keys and values in the input to newMsg (msgData) will be less than or equal to
-// this value. If newMsg will add data of its own, then maxPayloadSize should take this into
-// account.
-//
-// When choosing a value for maxPayloadSize, consider that marshaling will add overhead to the
-// size of the payload on the wire. For example, a payload marshaled as JSON will contain
-// additional characters like quotes, colons, and commas.
-func NewStream[M Message](
-	data string, maxPayloadSize int, newMsg func(msgData map[string]string) M) (Stream[M], error) {
+// Send sends this Stream of Messages using the specified PushProvider. Stops after the first error;
+// retries are left to the caller. Returned errors are always SendStreamError.
+func (s *Stream[M]) Send(ctx context.Context, p PushProvider[M], t []Target) error {
+	successful := 0
 
-	id, err := newStreamID()
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate stream ID: %w", err)
+	for msg, ok := s.next(); ok; msg, ok = s.next() {
+		if err := p.Send(ctx, t, msg); err != nil {
+			s.buffered = &msg
+			return SendStreamError[M]{
+				Remaining:  s,
+				Successful: successful,
+				cause:      err,
+			}
+		}
+		successful++
 	}
 
-	if maxPayloadSize <= streamMsgOverhead {
-		return nil, fmt.Errorf("payload size limit (%d) <= overhead (%d)", maxPayloadSize, streamMsgOverhead)
-	}
-
-	return &stream[M]{
-		maxPayloadSize: maxPayloadSize,
-		streamID:       id,
-		data:           data,
-		newMsg:         newMsg,
-	}, nil
+	return nil
 }
 
 // SendStreamError is the error returned by SendStream.
 type SendStreamError[M Message] struct {
 	// Remaining is a Stream of all messages which were not successfully sent.
-	Remaining Stream[M]
+	Remaining *Stream[M]
 
 	// Successful is the number of messages sent successfully. This can be used to track whether
 	// retries are making progress.
@@ -252,42 +273,6 @@ func (sse SendStreamError[M]) Error() string {
 
 func (sse SendStreamError[M]) Unwrap() error {
 	return sse.cause
-}
-
-type streamWithBufferedMessage[M Message] struct {
-	buffered *M
-	s        Stream[M]
-}
-
-func (s *streamWithBufferedMessage[M]) NextMessage() (M, bool) {
-	if s.buffered != nil {
-		m := s.buffered
-		s.buffered = nil
-		return *m, true
-	}
-	return s.s.NextMessage()
-}
-
-// SendStream sends a Stream of Messages using the specified PushProvider. Stops after the first
-// error; retries are left to the caller. Returned errors are always SendStreamError.
-func SendStream[M Message](ctx context.Context, p PushProvider[M], t []Target, s Stream[M]) error {
-	successful := 0
-
-	for msg, ok := s.NextMessage(); ok; msg, ok = s.NextMessage() {
-		if err := p.Send(ctx, t, msg); err != nil {
-			return SendStreamError[M]{
-				Remaining: &streamWithBufferedMessage[M]{
-					buffered: &msg,
-					s:        s,
-				},
-				Successful: successful,
-				cause:      err,
-			}
-		}
-		successful++
-	}
-
-	return nil
 }
 
 // PartialFailure is an error returned when a message is successfully sent for some targets, but not
