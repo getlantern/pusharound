@@ -18,6 +18,38 @@ const (
 
 	// See the 'to' field under request schema: https://pushy.me/docs/api/send-notifications.
 	pushyPushBatchLimit = 100000
+
+	// PushyPayloadLimit is the maximum size of a payload sent over Pushy when marshaled as JSON.
+	// This does not include any of pusharound's own metadata added to the payload. Essentially, if
+	// a map called 'data' is used to create a Message and that Message is to be sent over a
+	// PushyProvider, then the result of json.Marshal(data) should be no larger than this value.
+	//
+	// This value was determined via experimentation as Pushy's documentation was found to be
+	// slightly inaccurate. The actual limit determined by experimentation has been buffered a bit
+	// to account for possible changes to Pushy's back-end or unforeseen complexities in how Pushy
+	// calculates payload sizes.
+	//
+	// Special note for streaming: the final payload size is the result of marshaling the data as
+	// JSON and thus may involve escaping certain characters. For data which might involve a large
+	// amount of escaping (e.g. a file with many newlines and double-quotes), the stream payload
+	// limit may need to be substantially less than this value. To determine the value needed for
+	// your data, try marshaling it as JSON to determine the marshaling overhead.
+	PushyPayloadLimit = 3900
+
+	// Pushy will reject any requests with a marshaled 'data' payload of greater than 3993 bytes.
+	// This value is in slight contradiction to the documentation (see the 'data' field under
+	// request schema: https://pushy.me/docs/api/send-notifications), which claims a maximum size of
+	// 4096.
+	//
+	// Unfortunately, these rejections are also silent. The API will respond 200 OK, but the
+	// notification will not be sent and an error will be logged in the Pushy portal.
+	//
+	// Accounting for the stream ID attached to all messages, this leaves 3959 bytes for data
+	// provided by users of the pusharound package. In communicating this limit via
+	// PushyPayloadLimit, we buffer this 3959-byte limit to 3900 bytes. In guarding against actual
+	// errors sending notifications to Pushy, we check the length of the marshaled payload against
+	// this value.
+	actualPushyPayloadLimit = 3980
 )
 
 // pushyProvider implements the PushProvider interface for the Pushy notification system
@@ -33,8 +65,7 @@ type pushyProvider struct {
 // See https://pushy.me.
 //
 // Messages to multiple targets will be batched, up to the 100,000 batch limit. It is an error to
-// call Send with more than 100,000 Targets or with a payload over 4KB (the payload size is the
-// size of Message.Data marshaled as JSON).
+// call Send with more than 100,000 Targets or with a payload over PushyPayloadLimit.
 func NewPushyProvider(client http.Client, apiKey string) PushProvider[TTLMessage] {
 	return pushyProvider{client, apiKey}
 }
@@ -42,6 +73,22 @@ func NewPushyProvider(client http.Client, apiKey string) PushProvider[TTLMessage
 func (pp pushyProvider) Send(ctx context.Context, t []Target, m TTLMessage) error {
 	if len(t) > pushyPushBatchLimit {
 		return fmt.Errorf("number of targets (%d) over batch size limit (%d)", len(t), pushyPushBatchLimit)
+	}
+
+	// Pushy silently fails for payloads over a certain size. This is entirely dependendent on the
+	// size of the 'data' field in the request body, after JSON encoding. The contents of this field
+	// are represented here by m.Data(). It has proven too complex to reliably predict the size of
+	// m.Data() once encoded without actually calculating the escape sequences required for each key
+	// and value.
+	//
+	// As a result of all of this, we encode m.Data() and reject the message ourselves if we believe
+	// Pushy will silently fail for this message.
+	encodedData, err := json.Marshal(m.Data())
+	if err != nil {
+		return fmt.Errorf("error encoding message data: %v", err)
+	}
+	if len(encodedData) > actualPushyPayloadLimit {
+		return errors.New("payload after marshaling is over Pushy payload limit")
 	}
 
 	req := pushyPushRequest{
