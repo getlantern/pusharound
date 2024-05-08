@@ -106,7 +106,9 @@ func (m message) Data() map[string]string { return m.data }
 
 // NewMessage constructs a message with the given data.
 func NewMessage(data map[string]string) Message {
-	data[streamIDKey] = streamIDNull
+	if _, ok := data[streamIDKey]; !ok {
+		data[streamIDKey] = streamIDNull
+	}
 	return message{data}
 }
 
@@ -238,7 +240,7 @@ func (s *Stream[M]) next() (M, bool) {
 // Send sends this Stream of Messages using the specified PushProvider. Stops after the first error;
 // retries are left to the caller. Returned errors are always SendStreamError.
 func (s *Stream[M]) Send(ctx context.Context, p PushProvider[M], t []Target) error {
-	successful := 0
+	successful := s.currentIndex
 
 	for msg, ok := s.next(); ok; msg, ok = s.next() {
 		if err := p.Send(ctx, t, msg); err != nil {
@@ -268,7 +270,7 @@ type SendStreamError[M Message] struct {
 }
 
 func (sse SendStreamError[M]) Error() string {
-	return fmt.Sprintf("failed to send full stream: %v", sse.cause)
+	return fmt.Sprintf("error on message %d: %v", sse.Successful, sse.cause)
 }
 
 func (sse SendStreamError[M]) Unwrap() error {
