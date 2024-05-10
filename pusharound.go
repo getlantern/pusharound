@@ -88,7 +88,8 @@ func (t Target) valid() bool {
 	return (t.topic == "" || t.deviceToken == "") && t.topic != t.deviceToken
 }
 
-// Message is a push notification message.
+// Message is a push notification message. A Message can only contain a limited amount of data
+// (subject to the limits imposed by push notification providers).
 //
 // Custom implementations of Message should embed the implementation defined by this library (via
 // NewMessage). This Message implementation contains metadata used to distinguish pusharound
@@ -140,7 +141,8 @@ type PushProvider[M Message] interface {
 	Send(context.Context, []Target, M) error
 }
 
-// Stream is a stream of data to be sent via a push notification provider.
+// Stream is a continuous stream of data to be sent via a push notification provider. A Stream can
+// be used to send large amounts of data across multiple push notifications.
 type Stream[M Message] struct {
 	maxPayloadSize int
 	streamID       string
