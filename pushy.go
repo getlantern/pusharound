@@ -67,6 +67,9 @@ type pushyProvider struct {
 // Messages to multiple targets will be batched, up to the 100,000 batch limit. It is an error to
 // call Send with more than 100,000 Targets or with a payload over PushyPayloadLimit. Send may
 // return a PartialFailure if the request fails for some targets, but not all.
+//
+// The Pushy API will reject requests which mix device and topic targets, so it is also an error to
+// call Send for a slice of targets including both device and topic targets.
 func NewPushyProvider(client http.Client, apiKey string) PushProvider[TTLMessage] {
 	return pushyProvider{client, apiKey}
 }
@@ -98,16 +101,23 @@ func (pp pushyProvider) Send(ctx context.Context, t []Target, m TTLMessage) erro
 		TTLSeconds: int(m.TTL().Seconds()),
 	}
 
-	// TODO: can we mix topic and device targets?
+	var haveDeviceTargets, haveTopicTargets bool
 	for i, target := range t {
 		if !target.valid() {
 			return errors.New("invalid target; must specify one of either device token or target")
 		}
 		if target.deviceToken != "" {
 			req.To[i] = target.deviceToken
+			haveDeviceTargets = true
 		} else {
 			req.To[i] = "/topics/" + target.topic
+			haveTopicTargets = true
 		}
+	}
+
+	if haveDeviceTargets && haveTopicTargets {
+		// The Pushy API will reject requests which mix device and topic targets.
+		return errors.New("cannot mix device and topic targets")
 	}
 
 	return pp.sendPush(ctx, req)

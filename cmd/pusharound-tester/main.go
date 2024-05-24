@@ -1,7 +1,7 @@
 // Command pusharound-tester can be used to test the Pusharound system. This command-line utility
 // can be used to send Pusharound messages or to stream files to Pusharound clients. This utility is
-// intended primarily for use with the example application provided in the Pusharound Flutter client
-// See github.com/getlantern/pusharound-flutter.
+// intended primarily for use with the example application provided in the Pusharound Flutter
+// client. See github.com/getlantern/pusharound-flutter.
 package main
 
 import (
