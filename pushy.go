@@ -140,10 +140,11 @@ func (pp pushyProvider) sendPush(ctx context.Context, req pushyPushRequest) erro
 
 	httpReq.Header.Add("Content-Type", "application/json")
 
-	// TODO: strip API key from returned errors; can test with schemeless URL
 	resp, err := pp.httpClient.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("http error: %w", err)
+		// Strip the API key from the error.
+		errStr := strings.Replace(err.Error(), pp.apiKey, "<redacted>", -1)
+		return fmt.Errorf("http error: %s", errStr)
 	}
 	defer resp.Body.Close()
 
