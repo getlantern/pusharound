@@ -3,6 +3,7 @@ package pusharound
 import (
 	"context"
 	"errors"
+	"math"
 	"math/rand"
 	"slices"
 	"strconv"
@@ -113,6 +114,19 @@ func TestSendStream(t *testing.T) {
 
 		roundtripped := collate(t, mp.sent)
 		require.Equal(t, data, roundtripped)
+	})
+
+	t.Run("stream capacity check", func(t *testing.T) {
+		// This should be the most we can fit in a stream with one character per message.
+		data := randStringData(int(math.Pow10(streamIndexLen)) - 1)
+
+		_, err := NewStream(data, streamMsgOverhead+1, NewMessage)
+		require.NoError(t, err)
+
+		// Add one character to push the data over the capacity of the stream.
+		data += "-"
+		_, err = NewStream(data, streamMsgOverhead+1, NewMessage)
+		require.Error(t, err)
 	})
 }
 

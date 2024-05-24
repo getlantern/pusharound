@@ -22,7 +22,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -193,6 +195,15 @@ func NewStream[M Message](
 
 	if maxPayloadSize <= streamMsgOverhead {
 		return nil, fmt.Errorf("payload size limit (%d) <= overhead (%d)", maxPayloadSize, streamMsgOverhead)
+	}
+
+	dataPerMsg := maxPayloadSize - streamMsgOverhead
+	totalPossible := dataPerMsg * (int(math.Pow10(streamIndexLen)) - 1)
+	if len(data) > totalPossible {
+		// If you're running into this error and you wind up looking at this line of code, please
+		// log an issue and describe your use case. Streams are currently limited to 1000 messages,
+		// but longer streams may be possible.
+		return nil, errors.New("data overflows capacity of stream")
 	}
 
 	return &Stream[M]{
