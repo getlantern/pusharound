@@ -65,7 +65,8 @@ type pushyProvider struct {
 // See https://pushy.me.
 //
 // Messages to multiple targets will be batched, up to the 100,000 batch limit. It is an error to
-// call Send with more than 100,000 Targets or with a payload over PushyPayloadLimit.
+// call Send with more than 100,000 Targets or with a payload over PushyPayloadLimit. Send may
+// return a PartialFailure if the request fails for some targets, but not all.
 func NewPushyProvider(client http.Client, apiKey string) PushProvider[TTLMessage] {
 	return pushyProvider{client, apiKey}
 }

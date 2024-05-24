@@ -5,7 +5,16 @@
 // This is the back-end side of the transport, intended for use with client libraries like the
 // pusharound Flutter library (https://github.com/getlantern/pusharound-flutter).
 //
-// TODO: expand with use cases and examples.
+// The intended use case for this library is in sending small amounts of control-plane data to
+// clients in censored regions. Communication between clients and servers in these regions can be
+// difficult, but push notification systems can be utilized to maintain contact. Notifications can
+// be delivered silently, allowing the application to handle control data without annoying pop-ups
+// for the user.
+//
+// The Message type allows the back-end to send loosely structured data as a map of key-value pairs.
+// Push notification providers impose payload limits, generally in the range of 4KB. To send larger
+// amounts of data, use a Stream. To use a new push notification service, implement the PushProvider
+// interface.
 package pusharound
 
 import (
