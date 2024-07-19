@@ -15,6 +15,10 @@
 // Push notification providers impose payload limits, generally in the range of 4KB. To send larger
 // amounts of data, use a Stream. To use a new push notification service, implement the PushProvider
 // interface.
+//
+// Note that topics are inherently not access-controlled in most or all push notification systems.
+// As such, sensitive data should not be sent via topics; devices should instead be targeted
+// individually.
 package pusharound
 
 import (
@@ -86,7 +90,9 @@ type Target struct {
 // DeviceTarget is a target device for a push notification.
 func DeviceTarget(deviceToken string) Target { return Target{deviceToken: deviceToken} }
 
-// TopicTarget is a target topic for a push notification.
+// TopicTarget is a target topic for a push notification. Note that topics are inherently not
+// access-controlled in most or all push notification systems. As such, sensitive data should not be
+// sent via topics; devices should instead be targeted individually.
 func TopicTarget(topic string) Target { return Target{topic: topic} }
 
 // Topic returns the topic name if this is a topic target and an empty string otherwise.
